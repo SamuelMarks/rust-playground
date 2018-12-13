@@ -7,4 +7,4 @@ authors = ["Samuel Marks <samuelmarks@gmail.com>"]
 serde = "^1.0.80"
 serde_derive = "^1.0.80"
 toml = "^0.4.10"
-void = "*"
+void = "1.0.2"

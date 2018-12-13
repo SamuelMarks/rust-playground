@@ -1,16 +1,20 @@
 #[macro_use]
-extern crate serde_derive;
-
 extern crate serde;
+#[macro_use]
+extern crate serde_derive;
+extern crate void;
+
 extern crate toml;
 
 use std::fmt;
 use std::marker::PhantomData;
+use std::str::FromStr;
+use core::num::ParseIntError;
 
-use serde::de::{self, Deserializer, Visitor, MapAccess, SeqAccess};
+use void::Void;
+use serde::de::{self, Deserialize, Deserializer, Visitor, MapAccess};
 
 fn main() {
-
     let build_string = r#"
     script = [[
         "echo SIMPLE",
@@ -46,7 +50,7 @@ fn main() {
 
 #[derive(Debug, Deserialize, Clone)]
 struct Task {
-    #[serde(deserialize_with = "script_deserializer")]
+    #[serde(deserialize_with = "string_or_struct")]
     #[serde(default)]
     script: Option<Script>,
     script_runner: Option<String>,
@@ -58,65 +62,55 @@ enum Script {
     Url(String),
 }
 
-// #[derive(Debug, Deserialize, Clone)]
-// struct InlineScript(Vec<String>);
+impl FromStr for Script {
+    type Err = ParseIntError;
 
-fn script_deserializer<'de, D>(deserializer: D) -> Result<Option<Script>, D::Error>
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Script::Inline(vec![String::from(s)]))
+    }
+}
+
+
+fn string_or_struct<'de, T, D>(deserializer: D) -> Result<Option<Script>, D::Error>
 where
+    T: Deserialize<'de> + FromStr<Err = Void>,
     D: Deserializer<'de>,
 {
-    struct ScriptDeserializer(PhantomData<fn() -> Option<Script>>);
+    // This is a Visitor that forwards string types to T's `FromStr` impl and
+    // forwards map types to T's `Deserialize` impl. The `PhantomData` is to
+    // keep the compiler from complaining about T being an unused generic type
+    // parameter. We need T in order to know the Value type for the Visitor
+    // impl.
+    struct StringOrStruct<T>(PhantomData<fn() -> T>);
 
-    impl<'de> Visitor<'de> for ScriptDeserializer
+    impl<'de, T> Visitor<'de> for StringOrStruct<T>
+    where
+        T: Deserialize<'de> + FromStr<Err = Void>,
     {
-        type Value = Option<Script>;
+        type Value = T;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
             formatter.write_str("string or map")
         }
 
-        fn visit_str<E>(self, value: &str) -> Result<Option<Script>, E>
+        fn visit_str<E>(self, value: &str) -> Result<T, E>
         where
             E: de::Error,
         {
-            Ok(Some(Script::Inline(vec![value.to_string()])))
+            Ok(FromStr::from_str(value).unwrap())
         }
 
-        fn visit_seq<S>(self, mut visitor: S) -> Result<Option<Script>, S::Error>
-        where
-            S: SeqAccess<'de>,
-        {
-            
-
-            // let mut lines = Vec::new();
-
-            // // Update the max while there are additional values.
-            // while let Some(value) = visitor.next_element()? {
-            //     println!("{:?}", value);
-            //     lines.push(value);
-            // }
-
-            // Ok(Some(Script::Inline(lines)))
-
-            let secs = visitor.next_element()?
-                .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-            //let _: Option<String> = visitor.next_key().unwrap(); 
-            Ok(Some(Script::Inline(secs)))
-        }
-
-        fn visit_map<M>(self, mut visitor: M) -> Result<Option<Script>, M::Error>
+        fn visit_map<M>(self, visitor: M) -> Result<T, M::Error>
         where
             M: MapAccess<'de>,
         {
-            let _: Option<String> = visitor.next_key().unwrap(); 
-            let url_string: Result<Option<String>, _> = visitor.next_value();
-            match url_string {
-                Ok(Some(string)) => Ok(Some(Script::Url(string))),
-                _ => Ok(None)
-            }    
+            // `MapAccessDeserializer` is a wrapper that turns a `MapAccess`
+            // into a `Deserializer`, allowing it to be used as the input to T's
+            // `Deserialize` implementation. T then deserializes itself using
+            // the entries from the map visitor.
+            Deserialize::deserialize(de::value::MapAccessDeserializer::new(visitor))
         }
     }
 
-    deserializer.deserialize_any(ScriptDeserializer(PhantomData))
+    deserializer.deserialize_any(StringOrStruct(PhantomData))
 }
-
